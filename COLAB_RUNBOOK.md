@@ -4,15 +4,13 @@
 
 ## До запуска
 
-1. Код клонируется из `https://github.com/karl4th/dataset-coll.git`. Перед полным
-   прогоном замените `CODE_REVISION = "main"` в первой ячейке notebook на SHA
-   опубликованного коммита, содержащего текущую версию pipeline.
+1. Код клонируется командой `git clone` из
+   `https://github.com/karl4th/dataset-coll.git`. Перед полным прогоном желательно
+   выполнить `git checkout --detach <COMMIT_SHA>`.
 2. В Colab выберите GPU runtime.
 3. Добавьте секрет `HF_TOKEN` через панель Colab Secrets. Токен должен иметь write
    access к организации `manifestro`.
-4. Если Git-репозиторий приватный, добавьте `GITHUB_TOKEN` в Colab Secrets с
-   минимальным read-only доступом к этому репозиторию.
-5. Не вставляйте токены в Git URL, notebook, YAML, вывод ячеек или Google Drive.
+4. Не вставляйте HF-токен в notebook, YAML, вывод ячеек или Google Drive.
 
 Notebook использует:
 
