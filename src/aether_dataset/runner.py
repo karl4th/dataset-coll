@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .benchmark import require_matching_benchmark
+from .benchmark import _is_cuda_oom, require_matching_benchmark
 from .config import AppConfig
 from .io import ShardWriter, append_jsonl, completed_shards, read_jsonl, utc_now
 from .mimi import MimiEncoder, PreparedAudio
@@ -120,34 +120,44 @@ def run(config: AppConfig, *, resume: bool) -> None:
                     cursor,
                 ),
                 name=f"prefetch-{target_split}",
-                daemon=True,
+                daemon=False,
             )
             producer.start()
-            while True:
-                item = prefetch.get()
-                if item is None:
-                    break
-                if isinstance(item, ProducerError):
-                    raise item.error
-                last_seen_cursor = item.last_seen_cursor
-                state.errors += item.failures
-                if not item.items:
-                    continue
-                batch_rows, batch_budget = _encode_with_oom_backoff(
-                    encoder, item.items, config, batch_budget
-                )
-                rows.extend(batch_rows)
-                _update_state(state, batch_rows)
-                reporter.report(
-                    state,
-                    interval=float(runtime["metrics_interval_seconds"]),
-                    prefetch_queue_depth=prefetch.qsize(),
-                )
-                accumulated_seconds = sum(float(row["audio_seconds"]) for row in rows)
-                if accumulated_seconds >= config.target_shard_seconds:
-                    ShardWriter(output, target_split, state.shard_index).write_complete(rows)
-                    state.shard_index += 1
-                    rows = []
+            try:
+                while True:
+                    item = prefetch.get()
+                    if item is None:
+                        break
+                    if isinstance(item, ProducerError):
+                        raise item.error
+                    last_seen_cursor = item.last_seen_cursor
+                    state.errors += item.failures
+                    if not item.items:
+                        continue
+                    batch_rows, batch_budget = _encode_with_oom_backoff(
+                        encoder, item.items, config, batch_budget
+                    )
+                    rows.extend(batch_rows)
+                    _update_state(state, batch_rows)
+                    reporter.report(
+                        state,
+                        interval=float(runtime["metrics_interval_seconds"]),
+                        prefetch_queue_depth=prefetch.qsize(),
+                    )
+                    accumulated_seconds = sum(float(row["audio_seconds"]) for row in rows)
+                    if accumulated_seconds >= config.target_shard_seconds:
+                        ShardWriter(output, target_split, state.shard_index).write_complete(rows)
+                        state.shard_index += 1
+                        rows = []
+            except BaseException:
+                stop["requested"] = True
+                while producer.is_alive():
+                    try:
+                        prefetch.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+                producer.join()
+                raise
             producer.join()
             if rows:
                 ShardWriter(output, target_split, state.shard_index).write_complete(rows)
@@ -182,9 +192,10 @@ def _produce_batches(
     initial_cursor: tuple[str, int] | None,
 ) -> None:
     pending: list[tuple[SourceExample, PreparedAudio, str]] = []
-    pending_seconds = 0.0
+    maximum_seconds = 0.0
     failures = 0
     last_seen_cursor = initial_cursor
+    pending_last_cursor = initial_cursor
 
     def put(value: PreparedBatch | ProducerError, *, honor_stop: bool = True) -> bool:
         while not stop["requested"]:
@@ -206,24 +217,35 @@ def _produce_batches(
         for example in examples:
             if stop["requested"]:
                 break
-            last_seen_cursor = (example.source_shard, example.source_row_index)
+            current_cursor = (example.source_shard, example.source_row_index)
             try:
                 normalized = normalize(example.original_text, config.raw["text"]["normalizer"])
                 prepared = encoder.prepare(example.audio_array, example.sample_rate)
                 if not normalized:
                     raise ValueError("normalized text is empty")
+                candidate_maximum = max(maximum_seconds, prepared.audio_seconds)
+                candidate_padded_seconds = candidate_maximum * (len(pending) + 1)
+                if pending and candidate_padded_seconds > batch_budget:
+                    if not put(PreparedBatch(pending, pending_last_cursor, failures)):
+                        return
+                    pending = []
+                    maximum_seconds = 0.0
+                    failures = 0
                 pending.append((example, prepared, normalized))
-                pending_seconds += prepared.audio_seconds
+                maximum_seconds = max(maximum_seconds, prepared.audio_seconds)
+                pending_last_cursor = current_cursor
+                last_seen_cursor = current_cursor
             except Exception as error:
                 _record_failure(output, example, error)
                 failures += 1
+                last_seen_cursor = current_cursor
                 continue
-            if pending_seconds < batch_budget:
+            if maximum_seconds * len(pending) < batch_budget:
                 continue
             if not put(PreparedBatch(pending, last_seen_cursor, failures)):
                 return
             pending = []
-            pending_seconds = 0.0
+            maximum_seconds = 0.0
             failures = 0
         if (pending or failures) and not put(PreparedBatch(pending, last_seen_cursor, failures)):
             return
@@ -248,7 +270,7 @@ def _encode_with_oom_backoff(
         codes = encoder.encode_batch([item[1] for item in pending])
     except Exception as error:
         torch = encoder.torch
-        if not isinstance(error, torch.cuda.OutOfMemoryError) or len(pending) == 1:
+        if not _is_cuda_oom(encoder, error) or len(pending) == 1:
             raise
         torch.cuda.empty_cache()
         midpoint = len(pending) // 2

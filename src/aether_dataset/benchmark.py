@@ -11,6 +11,8 @@ from .io import sha256_file, utc_now
 from .mimi import MimiEncoder, PreparedAudio
 from .source import iter_source_examples
 
+BATCHING_STRATEGY = "max_padded_audio_seconds_v2"
+
 
 def benchmark(config: AppConfig, *, correctness_examples: int = 6) -> dict[str, Any]:
     config.require_ready()
@@ -54,16 +56,20 @@ def benchmark(config: AppConfig, *, correctness_examples: int = 6) -> dict[str, 
     maximum = float(runtime["max_batch_audio_seconds"])
     target_fraction = float(runtime["target_vram_fraction"])
     recommended = budget
+    last_safe_budget: float | None = None
     while budget <= maximum:
         trial_batch = _fill_budget(prepared, budget)
         try:
+            if encoder.device.type == "cuda":
+                encoder.torch.cuda.empty_cache()
+                encoder.torch.cuda.reset_peak_memory_stats(encoder.device)
             _synchronize(encoder)
             started = time.perf_counter()
             encoder.encode_batch(trial_batch)
             _synchronize(encoder)
             elapsed = time.perf_counter() - started
             audio_seconds = sum(item.audio_seconds for item in trial_batch)
-            memory_fraction = _memory_fraction(encoder)
+            memory_fraction = _peak_memory_fraction(encoder)
             trials.append(
                 {
                     "budget_audio_seconds": budget,
@@ -75,14 +81,20 @@ def benchmark(config: AppConfig, *, correctness_examples: int = 6) -> dict[str, 
                     "status": "ok",
                 }
             )
-            recommended = budget
+            if memory_fraction is None or memory_fraction <= target_fraction:
+                last_safe_budget = budget
+                recommended = budget
             if memory_fraction is not None and memory_fraction >= target_fraction:
                 break
             budget *= 2
-        except encoder.torch.cuda.OutOfMemoryError:
+        except Exception as error:
+            if not _is_cuda_oom(encoder, error):
+                raise
             encoder.torch.cuda.empty_cache()
             trials.append({"budget_audio_seconds": budget, "status": "oom"})
             break
+    if last_safe_budget is None:
+        raise RuntimeError("no batch fits the configured peak VRAM target")
 
     payload = {
         "created_at_utc": utc_now(),
@@ -93,6 +105,7 @@ def benchmark(config: AppConfig, *, correctness_examples: int = 6) -> dict[str, 
         "mimi_implementation": f"moshi=={version('moshi')}",
         "device": runtime["device"],
         "batch_single_equivalent": True,
+        "batching_strategy": BATCHING_STRATEGY,
         "correctness_examples": len(prepared),
         "recommended_batch_audio_seconds": recommended,
         "trials": trials,
@@ -115,6 +128,7 @@ def require_matching_benchmark(config: AppConfig) -> dict[str, Any]:
         "mimi_model_revision": config.raw["mimi"]["revision"],
         "device": config.raw["runtime"]["device"],
         "batch_single_equivalent": True,
+        "batching_strategy": BATCHING_STRATEGY,
     }
     mismatches = [key for key, value in expected.items() if payload.get(key) != value]
     if mismatches:
@@ -124,11 +138,14 @@ def require_matching_benchmark(config: AppConfig) -> dict[str, Any]:
 
 def _fill_budget(source: list[PreparedAudio], budget: float) -> list[PreparedAudio]:
     selected: list[PreparedAudio] = []
-    total = 0.0
+    maximum_seconds = 0.0
     for item in cycle(source):
+        candidate_maximum = max(maximum_seconds, item.audio_seconds)
+        if selected and candidate_maximum * (len(selected) + 1) > budget:
+            return selected
         selected.append(item)
-        total += item.audio_seconds
-        if total >= budget:
+        maximum_seconds = candidate_maximum
+        if maximum_seconds * len(selected) >= budget:
             return selected
     raise AssertionError("unreachable")
 
@@ -138,8 +155,16 @@ def _synchronize(encoder: MimiEncoder) -> None:
         encoder.torch.cuda.synchronize(encoder.device)
 
 
-def _memory_fraction(encoder: MimiEncoder) -> float | None:
+def _peak_memory_fraction(encoder: MimiEncoder) -> float | None:
     if encoder.device.type != "cuda":
         return None
-    free, total = encoder.torch.cuda.mem_get_info(encoder.device)
-    return (total - free) / total
+    total = encoder.torch.cuda.get_device_properties(encoder.device).total_memory
+    peak = encoder.torch.cuda.max_memory_allocated(encoder.device)
+    return peak / total
+
+
+def _is_cuda_oom(encoder: MimiEncoder, error: Exception) -> bool:
+    message = str(error).lower()
+    return isinstance(error, encoder.torch.cuda.OutOfMemoryError) or (
+        "cuda" in message and "out of memory" in message
+    )

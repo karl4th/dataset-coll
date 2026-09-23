@@ -33,9 +33,9 @@ output:
 runtime:
   device: cuda
   seed: 1337
-  target_vram_fraction: 0.90
-  initial_batch_audio_seconds: 120
+  target_vram_fraction: 0.80
+  initial_batch_audio_seconds: 60
   min_batch_audio_seconds: 5
-  max_batch_audio_seconds: 1800
+  max_batch_audio_seconds: 600
   prefetch_batches: 4
   metrics_interval_seconds: 5
