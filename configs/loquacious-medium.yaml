@@ -1,0 +1,41 @@
+dataset:
+  id: speechbrain/LoquaciousSet
+  revision: 0e84cdb9e4b826afaabca5d33ec9453b11aacef3
+  splits:
+    train:
+      config: medium
+      split: train
+      expected_audio_hours: 2500
+    validation:
+      config: dev
+      split: dev
+      expected_audio_hours: 15
+    test:
+      config: test
+      split: test
+      expected_audio_hours: 21
+
+mimi:
+  hf_repo: kyutai/moshiko-pytorch-bf16
+  revision: 2bfc9ae6e89079a5cc7ed2a68436010d91a3d289
+  semantic_codebook_index: 0
+  sample_rate: 24000
+  frame_rate: 12.5
+  codebook_size: 2048
+
+text:
+  normalizer: english_v1
+
+output:
+  path: REQUIRED_OUTPUT_PATH
+  target_audio_hours_per_shard: 25
+
+runtime:
+  device: cuda
+  seed: 1337
+  target_vram_fraction: 0.90
+  initial_batch_audio_seconds: 120
+  min_batch_audio_seconds: 5
+  max_batch_audio_seconds: 1800
+  prefetch_batches: 4
+  metrics_interval_seconds: 5
