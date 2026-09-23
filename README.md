@@ -26,10 +26,20 @@ uv run aether-dataset run --config configs/loquacious-medium.yaml
 uv run aether-dataset run --config configs/loquacious-medium.yaml --resume
 uv run aether-dataset status --output /data/loquacious-medium-mimi
 uv run aether-dataset validate --output /data/loquacious-medium-mimi
+
+# После успешной полной валидации — публикация в private HF dataset repo.
+HF_TOKEN=... uv run aether-dataset publish \
+  --output /data/loquacious-medium-mimi \
+  --repo manifestro/stage1_aether
 ```
 
 `run` and `benchmark` intentionally refuse to start while required configuration
 placeholders remain unresolved.
+
+Для Google Colab используйте
+[`notebooks/stage1_aether_cache_colab.ipynb`](notebooks/stage1_aether_cache_colab.ipynb)
+и [`COLAB_RUNBOOK.md`](COLAB_RUNBOOK.md). Код переносится в runtime только через
+`git clone`; Google Drive хранит исключительно restartable output.
 
 Полный прогон не следует запускать на локальном Mac: benchmark и extraction должны
 выполняться в одном типе CUDA-окружения на целевой GPU.

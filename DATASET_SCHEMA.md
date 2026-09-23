@@ -246,7 +246,17 @@ uv run aether-dataset status --output /data/loquacious-medium-mimi
 
 # Полная проверка уже созданного кеша.
 uv run aether-dataset validate --output /data/loquacious-medium-mimi
+
+# Публикация выполняется только после полной валидации.
+uv run aether-dataset publish \
+  --output /data/loquacious-medium-mimi \
+  --repo manifestro/stage1_aether
 ```
+
+`publish` требует `HF_TOKEN`, создаёт или использует только приватный dataset repo,
+публикует каждый шард вместе с checksum receipt и безопасно пропускает уже
+подтверждённые remote shards при повторном запуске. Токен не сохраняется в кеше,
+конфигурации, логах или notebook.
 
 Перед полным прогоном `benchmark` должен проверить несколько характерных длин
 аудио, подобрать batch budget для доступной GPU и сохранить выбранные параметры.

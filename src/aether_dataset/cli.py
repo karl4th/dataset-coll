@@ -11,6 +11,7 @@ from rich.table import Table
 from .benchmark import benchmark
 from .config import ConfigError, load_config
 from .io import read_jsonl
+from .publish import DEFAULT_REPO_ID, publish_private_cache
 from .runner import StopRequested, run
 from .validation import validate_cache
 
@@ -32,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="validate completed cache shards")
     validate.add_argument("--output", required=True, type=Path)
     validate.add_argument("--skip-checksums", action="store_true")
+
+    publish = subparsers.add_parser("publish", help="publish a validated private HF dataset")
+    publish.add_argument("--output", required=True, type=Path)
+    publish.add_argument("--repo", default=DEFAULT_REPO_ID)
     return parser
 
 
@@ -48,6 +53,9 @@ def main(argv: list[str] | None = None) -> int:
             _show_status(args.output, console)
         elif args.command == "validate":
             summary = validate_cache(args.output, verify_checksums=not args.skip_checksums)
+            console.print_json(json.dumps(asdict(summary)))
+        elif args.command == "publish":
+            summary = publish_private_cache(args.output, repo_id=args.repo)
             console.print_json(json.dumps(asdict(summary)))
         return 0
     except StopRequested as error:
